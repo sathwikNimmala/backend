@@ -1,0 +1,321 @@
+# 📝 What Happens When We Run a Java Application?
+### Complete Flow — Process Creation to Method Execution
+
+---
+
+## 📌 Table of Contents
+1. [Step 1 — You Type Command](#step-1--you-type-command)
+2. [Step 2 — OS Creates Process](#step-2--os-creates-process)
+3. [Step 3 — JVM Sets Up Memory](#step-3--jvm-sets-up-memory)
+4. [Step 4 — ClassLoader Loads Class](#step-4--classloader-loads-class)
+5. [Step 5 — JVM Creates Main Thread](#step-5--jvm-creates-main-thread)
+6. [Step 6 — main() Called](#step-6--main-called)
+7. [Step 7 — Object Created in Heap](#step-7--object-created-in-heap)
+8. [Step 8 — Threads Created](#step-8--threads-created)
+9. [Step 9 — Threads Started](#step-9--threads-started)
+10. [Step 10 — Methods Execute in Parallel](#step-10--methods-execute-in-parallel)
+11. [Step 11 — Threads Finish](#step-11--threads-finish)
+12. [Step 12 — Program Ends](#step-12--program-ends)
+13. [One Page Summary](#-one-page-summary)
+14. [Full Memory Diagram](#-full-memory-diagram)
+
+---
+
+## STEP 1 — You Type Command
+
+```
+java MusicPlayer
+      ↓
+OS receives command
+```
+
+---
+
+## STEP 2 — OS Creates Process
+
+```
+OS
+ ↓
+Creates JVM Process
+ ↓
+Assigns PID (example: 1234)
+ ↓
+Allocates RAM for JVM
+```
+
+---
+
+## STEP 3 — JVM Sets Up Memory
+
+```
+┌─────────────────────────────┐
+│        JVM MEMORY           │
+│                             │
+│  ┌─────────────────────┐   │
+│  │     METHOD AREA     │   │
+│  │   (empty for now)   │   │
+│  └─────────────────────┘   │
+│                             │
+│  ┌─────────────────────┐   │
+│  │       HEAP          │   │
+│  │   (empty for now)   │   │
+│  └─────────────────────┘   │
+│                             │
+│  ┌─────────────────────┐   │
+│  │    MAIN THREAD      │   │
+│  │      STACK          │   │
+│  │   (empty for now)   │   │
+│  └─────────────────────┘   │
+└─────────────────────────────┘
+```
+
+---
+
+## STEP 4 — ClassLoader Loads Class
+
+```
+JVM ClassLoader
+ ↓
+Finds MusicPlayer.class
+ ↓
+Loads into METHOD AREA
+
+┌─────────────────────────┐
+│      METHOD AREA        │
+│                         │
+│  MusicPlayer.class ✅   │
+│  → playSong()           │
+│  → downloadSong()       │
+│  → likeSong()           │
+│  → main()               │
+└─────────────────────────┘
+```
+
+---
+
+## STEP 5 — JVM Creates Main Thread
+
+```
+JVM
+ ↓
+Creates "main" thread
+ ↓
+Creates 5 background threads (auto)
+
+┌──────────────────────────────────────┐
+│           ALL THREADS                │
+│                                      │
+│  main thread          ← YOUR code   │
+│  Reference Handler    ← JVM work    │
+│  Finalizer            ← JVM work    │
+│  Signal Dispatcher    ← JVM work    │
+│  Attach Listener      ← JVM work    │
+│  Common Cleaner       ← JVM work    │
+└──────────────────────────────────────┘
+```
+
+---
+
+## STEP 6 — main() Called
+
+```
+main thread
+ ↓
+Calls main() method
+ ↓
+Stack frame pushed
+
+┌─────────────────────┐
+│   MAIN THREAD STACK │
+│  ┌───────────────┐  │
+│  │   main()      │  │  ← TOP
+│  └───────────────┘  │
+└─────────────────────┘
+```
+
+---
+
+## STEP 7 — Object Created in Heap
+
+```
+main() executes:
+new MusicPlayer()
+ ↓
+JVM allocates object in HEAP
+
+┌─────────────────────────┐
+│         HEAP            │
+│  ┌───────────────────┐  │
+│  │  MusicPlayer obj  │  │
+│  │  address: 0x1A2B  │  │
+│  └───────────────────┘  │
+└─────────────────────────┘
+
+Stack holds reference → 0x1A2B
+```
+
+---
+
+## STEP 8 — Threads Created
+
+```
+main() executes:
+new Thread(t1)  → NEW state
+new Thread(t2)  → NEW state
+new Thread(t3)  → NEW state
+
+┌──────────────────────────────────┐
+│  t1 PlayThread     → NEW  ⭕     │
+│  t2 DownloadThread → NEW  ⭕     │
+│  t3 LikeThread     → NEW  ⭕     │
+└──────────────────────────────────┘
+```
+
+---
+
+## STEP 9 — Threads Started
+
+```
+t1.start() → PlayThread     RUNNABLE → RUNNING
+t2.start() → DownloadThread RUNNABLE → RUNNING
+t3.start() → LikeThread     RUNNABLE → RUNNING
+
+Each thread gets its OWN stack!
+
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│PlayThread│ │Download  │ │LikeThread│
+│  Stack   │ │  Stack   │ │  Stack   │
+│playSong()│ │download()│ │likeSong()│
+└──────────┘ └──────────┘ └──────────┘
+      ↓             ↓           ↓
+  sleeping 5s   sleeping 8s  sleeping 2s
+```
+
+---
+
+## STEP 10 — Methods Execute in Parallel
+
+```
+Time →  0s       2s       5s              8s
+        │        │        │               │
+Play    ├────────┼────────┤ ✅ done        │
+Download├────────┼────────┼───────────────┤ ✅ done
+Like    ├────┤ ✅ done    │               │
+
+Total = 8 seconds only!
+```
+
+---
+
+## STEP 11 — Threads Finish
+
+```
+Each thread finishes
+ ↓
+Stack frame popped
+ ↓
+Thread state → TERMINATED
+ ↓
+Stack memory released
+```
+
+---
+
+## STEP 12 — Program Ends
+
+```
+All threads done
+ ↓
+main thread finishes
+ ↓
+JVM shuts down
+ ↓
+OS releases memory
+ ↓
+Process removed from RAM
+```
+
+---
+
+## 🗒️ One Page Summary
+
+```
+java MusicPlayer
+      ↓
+OS creates JVM Process (PID)
+      ↓
+JVM sets up Heap + Method Area + Stack
+      ↓
+ClassLoader loads MusicPlayer.class → Method Area
+      ↓
+JVM creates main thread + 5 background threads
+      ↓
+main() pushed to Stack
+      ↓
+new MusicPlayer() → object created in Heap
+      ↓
+t1, t2, t3 created → NEW state
+      ↓
+t1.start(), t2.start(), t3.start()
+      ↓
+Each thread gets own Stack
+Each thread runs its method
+All run SIMULTANEOUSLY
+      ↓
+Threads finish → TERMINATED → Stack cleared
+      ↓
+main finishes → JVM shuts down → RAM freed
+```
+
+---
+
+## 🎨 Full Memory Diagram
+
+```
+┌─────────────────────────────────────────────────┐
+│                 JVM PROCESS                     │
+│                                                 │
+│  METHOD AREA          HEAP                      │
+│  ┌─────────────┐     ┌───────────────────────┐ │
+│  │MusicPlayer  │     │  MusicPlayer object   │ │
+│  │ playSong()  │     │  address: 0x1A2B      │ │
+│  │ download()  │     └───────────────────────┘ │
+│  │ likeSong()  │                               │
+│  │ main()      │                               │
+│  └─────────────┘                               │
+│                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │  main    │  │  Play    │  │ Download │     │
+│  │  thread  │  │  thread  │  │  thread  │     │
+│  │  Stack   │  │  Stack   │  │  Stack   │     │
+│  │ [main()] │  │[playSong]│  │[download]│     │
+│  └──────────┘  └──────────┘  └──────────┘     │
+│                      ┌──────────┐              │
+│                      │  Like    │              │
+│                      │  thread  │              │
+│                      │  Stack   │              │
+│                      │[likeSong]│              │
+│                      └──────────┘              │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔑 Key Points to Remember
+
+```
+1. ONE process created  → JVM process
+2. SIX threads minimum → 1 main + 5 JVM background
+3. ONE heap            → shared by all threads
+4. ONE stack per thread → each thread has its own
+5. Method Area         → stores class definitions
+6. ClassLoader         → loads .class into Method Area
+7. new keyword         → creates object in Heap
+8. thread.start()      → creates new stack for thread
+9. thread.join()       → main waits for thread to finish
+10. All threads done   → JVM shuts down → RAM freed
+```
+
+---
+
+*Take your time, draw it on paper — once you draw it yourself it will never leave your memory! 💪🚀*
