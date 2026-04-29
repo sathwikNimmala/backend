@@ -1,0 +1,1066 @@
+# Java Executor Framework — Complete Guide
+
+---
+
+## Table of Contents
+
+1. [The Problem: Life Before Executor Framework](#1-the-problem-life-before-executor-framework)
+2. [What is the Executor Framework?](#2-what-is-the-executor-framework)
+3. [Architecture Overview](#3-architecture-overview)
+4. [Runnable vs Callable vs Future](#4-runnable-vs-callable-vs-future)
+5. [ExecutorService — Core Interface](#5-executorservice--core-interface)
+6. [Thread Pool Types](#6-thread-pool-types)
+7. [ScheduledExecutorService](#7-scheduledexecutorservice)
+8. [Future & CompletableFuture](#8-future--completablefuture)
+9. [Shutdown & Lifecycle Management](#9-shutdown--lifecycle-management)
+10. [Best Practices](#10-best-practices)
+11. [Common Pitfalls](#11-common-pitfalls)
+12. [Quick Reference — Comparison Table](#12-quick-reference--comparison-table)
+
+---
+
+## 1. The Problem: Life Before Executor Framework
+
+Before Java 5, if you wanted concurrent execution, you had to manually create, manage, and destroy threads. This led to serious problems.
+
+### 1.1 Manual Thread Creation (The Old Way)
+
+```java
+// ❌ BAD PRACTICE — Creating a new thread for every task
+public class OldThreadApproach {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        // For each task, a new Thread is created manually
+        for (int i = 1; i <= 10; i++) {
+            final int taskId = i;
+
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    System.out.println("Task " + taskId + " running on: " + Thread.currentThread().getName());
+                    // Simulate work
+                    try { Thread.sleep(500); } catch (InterruptedException e) { e.printStackTrace(); }
+                }
+            });
+
+            thread.start(); // Creates a brand-new OS thread every time!
+        }
+
+        // Problem: No way to know when all tasks are done without complex join() calls
+    }
+}
+```
+
+### 1.2 Problems with Manual Thread Management
+
+| Problem | Description |
+|---|---|
+| **Thread creation overhead** | Creating an OS thread is expensive (~1MB stack, kernel involvement) |
+| **No upper bound** | Unbounded threads exhaust memory/CPU |
+| **No task queue** | No built-in mechanism to hold pending tasks |
+| **No return values** | `Thread.run()` returns `void` — you can't get a result |
+| **No exception propagation** | Exceptions in threads are silently swallowed unless you add handlers |
+| **No lifecycle control** | No clean way to shut down a pool of threads |
+| **No scheduling** | No easy way to run a task after a delay or periodically |
+
+```java
+// ❌ This kind of code was common before Java 5 — and it's dangerous!
+public class ThreadPoolManual {
+
+    private static final int POOL_SIZE = 5;
+    private final Thread[] threads = new Thread[POOL_SIZE];
+    private final List<Runnable> taskQueue = new LinkedList<>();
+    private boolean running = true;
+
+    // Developers had to MANUALLY implement all of this:
+    // - Thread pooling
+    // - Task queuing
+    // - Synchronization
+    // - Shutdown hooks
+    // ... it was error-prone and boilerplate-heavy
+}
+```
+
+---
+
+## 2. What is the Executor Framework?
+
+Introduced in **Java 5 (java.util.concurrent)** by Doug Lea, the Executor Framework decouples **task submission** from **thread management**.
+
+> **Core Idea:** You submit a task. The framework decides how and when to run it — using a managed pool of reusable threads.
+
+### 2.1 Key Benefits
+
+- ✅ Thread reuse — eliminates expensive thread creation/destruction
+- ✅ Bounded thread pools — prevents resource exhaustion
+- ✅ Task queuing — tasks wait in a queue if all threads are busy
+- ✅ Return values from tasks via `Callable` + `Future`
+- ✅ Scheduling support
+- ✅ Clean shutdown lifecycle
+- ✅ Exception handling hooks
+
+### 2.2 Package Location
+
+```java
+import java.util.concurrent.*;
+// All Executor Framework classes live here
+```
+
+---
+
+## 3. Architecture Overview
+
+```
+          ┌──────────────────────────────────────────────┐
+          │              Executor (interface)            │
+          │          void execute(Runnable command)      │
+          └──────────────────────┬───────────────────────┘
+                                 │
+          ┌──────────────────────▼───────────────────────┐
+          │          ExecutorService (interface)         │
+          │  submit(), invokeAll(), invokeAny(),         │
+          │  shutdown(), shutdownNow(), isTerminated()   │
+          └────────┬─────────────────────────────┬───────┘
+                   │                             │
+   ┌───────────────▼──────────┐   ┌──────────────▼──────────────┐
+   │  ThreadPoolExecutor      │   │  ScheduledExecutorService   │
+   │  (concrete class)        │   │  (interface)                │
+   │  - corePoolSize          │   │  schedule(), scheduleAtFixed│
+   │  - maxPoolSize           │   │  Rate(), scheduleWithFixed  │
+   │  - keepAliveTime         │   │  Delay()                    │
+   │  - BlockingQueue         │   └──────────────┬──────────────┘
+   │  - RejectedExecHandler   │                  │
+   └──────────────────────────┘   ┌──────────────▼──────────────┐
+                                  │ ScheduledThreadPoolExecutor │
+   ┌──────────────────────────┐   └─────────────────────────────┘
+   │       Executors          │
+   │   (factory class)        │
+   │  newFixedThreadPool()    │
+   │  newCachedThreadPool()   │
+   │  newSingleThreadExecutor │
+   │  newScheduledThreadPool()│
+   └──────────────────────────┘
+```
+
+---
+
+## 4. Runnable vs Callable vs Future
+
+These three are the building blocks of task submission.
+
+### 4.1 Runnable — Fire and Forget
+
+`Runnable` is the oldest interface (since Java 1.0). It runs a task but **returns no result** and **cannot throw checked exceptions**.
+
+```java
+import java.util.concurrent.*;
+
+public class RunnableExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+
+        // ✅ Lambda-style Runnable (Java 8+)
+        Runnable task1 = () -> {
+            System.out.println("Task 1 running on: " + Thread.currentThread().getName());
+        };
+
+        // ✅ Anonymous class style
+        Runnable task2 = new Runnable() {
+            @Override
+            public void run() {
+                System.out.println("Task 2 running on: " + Thread.currentThread().getName());
+            }
+        };
+
+        executor.execute(task1);   // No return value
+        executor.execute(task2);
+        executor.submit(task1);    // submit() also works with Runnable — returns Future<?>
+
+        executor.shutdown();
+    }
+}
+```
+
+**Output (order may vary):**
+```
+Task 1 running on: pool-1-thread-1
+Task 2 running on: pool-1-thread-2
+Task 1 running on: pool-1-thread-3
+```
+
+**Signature:**
+```java
+@FunctionalInterface
+public interface Runnable {
+    void run();  // no return, no checked exception
+}
+```
+
+---
+
+### 4.2 Callable — Task with a Return Value
+
+`Callable<V>` is the modern alternative to `Runnable`. It **returns a result** of type `V` and **can throw checked exceptions**.
+
+```java
+import java.util.concurrent.*;
+
+public class CallableExample {
+
+    public static void main(String[] args) throws Exception {
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        // ✅ Callable that returns an Integer
+        Callable<Integer> sumTask = () -> {
+            int sum = 0;
+            for (int i = 1; i <= 100; i++) sum += i;
+            System.out.println("Computed sum on: " + Thread.currentThread().getName());
+            return sum;
+        };
+
+        // ✅ Callable that might throw a checked exception
+        Callable<String> fileReadTask = () -> {
+            // Could throw IOException — perfectly legal in Callable
+            Thread.sleep(1000); // simulate file reading
+            return "File content read successfully";
+        };
+
+        // submit() returns a Future
+        Future<Integer> sumFuture = executor.submit(sumTask);
+        Future<String> fileFuture = executor.submit(fileReadTask);
+
+        // Blocking call — waits until result is ready
+        System.out.println("Sum = " + sumFuture.get());
+        System.out.println("File = " + fileFuture.get());
+
+        executor.shutdown();
+    }
+}
+```
+
+**Output:**
+```
+Computed sum on: pool-1-thread-1
+Sum = 5050
+File = File content read successfully
+```
+
+**Signature:**
+```java
+@FunctionalInterface
+public interface Callable<V> {
+    V call() throws Exception;  // returns V, can throw checked Exception
+}
+```
+
+---
+
+### 4.3 Future — Handle on an Async Result
+
+`Future<V>` is a reference to the result of an asynchronous computation. You get a `Future` when you call `executor.submit(callable)`.
+
+```java
+import java.util.concurrent.*;
+
+public class FutureExample {
+
+    public static void main(String[] args) throws Exception {
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        Callable<String> heavyTask = () -> {
+            Thread.sleep(2000); // simulate heavy computation
+            return "Heavy task done!";
+        };
+
+        // Submit and immediately get a Future (non-blocking)
+        Future<String> future = executor.submit(heavyTask);
+
+        System.out.println("Task submitted. Doing other work...");
+
+        // ✅ isDone() — non-blocking check
+        System.out.println("Is done? " + future.isDone()); // false — still running
+
+        // ✅ get() — blocking, waits indefinitely
+        String result = future.get();
+        System.out.println("Result: " + result);
+
+        // ✅ get(timeout, unit) — blocking with timeout
+        // String result2 = future.get(3, TimeUnit.SECONDS); // throws TimeoutException if too slow
+
+        // ✅ cancel(mayInterrupt)
+        // future.cancel(true); // attempts to cancel the task
+
+        System.out.println("Is done now? " + future.isDone()); // true
+
+        executor.shutdown();
+    }
+}
+```
+
+**Key Future Methods:**
+
+| Method | Description |
+|---|---|
+| `get()` | Blocks until result is ready; throws `ExecutionException` on task failure |
+| `get(timeout, unit)` | Blocks up to timeout; throws `TimeoutException` |
+| `isDone()` | Returns `true` if task completed (success, cancel, or exception) |
+| `isCancelled()` | Returns `true` if cancelled before completion |
+| `cancel(boolean)` | Tries to cancel; `true` = interrupt if running |
+
+---
+
+### 4.4 Runnable vs Callable vs Future — Side-by-Side Comparison
+
+| Feature | `Runnable` | `Callable<V>` | `Future<V>` |
+|---|---|---|---|
+| **Package** | `java.lang` | `java.util.concurrent` | `java.util.concurrent` |
+| **Since** | Java 1.0 | Java 5 | Java 5 |
+| **Returns value** | ❌ No (`void`) | ✅ Yes (`V`) | ✅ Yes (via `get()`) |
+| **Throws checked exception** | ❌ No | ✅ Yes | N/A |
+| **Method name** | `run()` | `call()` | `get()`, `isDone()`, etc. |
+| **Used with** | `execute()`, `submit()` | `submit()` | Returned by `submit()` |
+| **Purpose** | Fire-and-forget task | Task with result | Handle to async result |
+
+```java
+// Summary of usage patterns:
+ExecutorService ex = Executors.newFixedThreadPool(2);
+
+// Runnable — no result
+ex.execute(() -> System.out.println("Runnable"));
+
+// Callable — has result
+Future<Integer> f = ex.submit(() -> 42);
+
+// Future — get the result later
+int value = f.get(); // 42
+```
+
+---
+
+## 5. ExecutorService — Core Interface
+
+`ExecutorService` extends `Executor` and provides full lifecycle management.
+
+### 5.1 submit() vs execute()
+
+```java
+import java.util.concurrent.*;
+
+public class SubmitVsExecute {
+
+    public static void main(String[] args) throws Exception {
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        // execute() — void, no return, no exception propagation from task
+        executor.execute(() -> System.out.println("execute: " + Thread.currentThread().getName()));
+
+        // submit(Runnable) — returns Future<?> (result is null on success)
+        Future<?> f1 = executor.submit(() -> System.out.println("submit runnable"));
+        f1.get(); // blocks, then returns null; re-throws task exception as ExecutionException
+
+        // submit(Callable<V>) — returns Future<V> with actual result
+        Future<String> f2 = executor.submit(() -> "Hello from Callable");
+        System.out.println(f2.get()); // "Hello from Callable"
+
+        executor.shutdown();
+    }
+}
+```
+
+### 5.2 invokeAll() — Submit Multiple Tasks
+
+```java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class InvokeAllExample {
+
+    public static void main(String[] args) throws Exception {
+
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+
+        List<Callable<String>> tasks = Arrays.asList(
+            () -> { Thread.sleep(300); return "Task A"; },
+            () -> { Thread.sleep(100); return "Task B"; },
+            () -> { Thread.sleep(200); return "Task C"; }
+        );
+
+        // invokeAll() blocks until ALL tasks finish
+        List<Future<String>> futures = executor.invokeAll(tasks);
+
+        for (Future<String> future : futures) {
+            System.out.println("Result: " + future.get());
+        }
+        // Output (in original submission order):
+        // Result: Task A
+        // Result: Task B
+        // Result: Task C
+
+        executor.shutdown();
+    }
+}
+```
+
+### 5.3 invokeAny() — First Result Wins
+
+```java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class InvokeAnyExample {
+
+    public static void main(String[] args) throws Exception {
+
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+
+        List<Callable<String>> tasks = Arrays.asList(
+            () -> { Thread.sleep(1000); return "Slow task"; },
+            () -> { Thread.sleep(200);  return "Fast task"; },  // This wins!
+            () -> { Thread.sleep(500);  return "Medium task"; }
+        );
+
+        // invokeAny() returns the FIRST successful result; cancels remaining
+        String winner = executor.invokeAny(tasks);
+        System.out.println("Winner: " + winner); // "Fast task"
+
+        executor.shutdown();
+    }
+}
+```
+
+---
+
+## 6. Thread Pool Types
+
+The `Executors` factory class provides convenience methods to create the most common pool configurations.
+
+### 6.1 newFixedThreadPool(n)
+
+Fixed number of threads. Ideal for CPU-bound tasks where you don't want more threads than cores.
+
+```java
+import java.util.concurrent.*;
+
+public class FixedThreadPoolExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        // ✅ Use when: you want predictable, bounded thread count
+        int cpuCores = Runtime.getRuntime().availableProcessors();
+        ExecutorService executor = Executors.newFixedThreadPool(cpuCores);
+
+        for (int i = 1; i <= 10; i++) {
+            final int id = i;
+            executor.submit(() -> {
+                System.out.println("Task " + id + " → " + Thread.currentThread().getName());
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            });
+        }
+
+        // Tasks 1-N run, rest wait in an unbounded LinkedBlockingQueue
+        executor.shutdown();
+        executor.awaitTermination(10, TimeUnit.SECONDS);
+        System.out.println("All tasks completed.");
+    }
+}
+```
+
+**Internals:** `LinkedBlockingQueue` (unbounded), fixed `corePoolSize = maxPoolSize`.
+
+---
+
+### 6.2 newCachedThreadPool()
+
+Grows thread count on demand; reuses idle threads; removes threads idle for 60 seconds.
+
+```java
+import java.util.concurrent.*;
+
+public class CachedThreadPoolExample {
+
+    public static void main(String[] args) {
+
+        // ✅ Use when: many short-lived tasks; I/O-bound tasks
+        // ⚠️ Risk: unbounded threads under high load
+        ExecutorService executor = Executors.newCachedThreadPool();
+
+        for (int i = 1; i <= 5; i++) {
+            final int id = i;
+            executor.submit(() ->
+                System.out.println("Task " + id + " on " + Thread.currentThread().getName())
+            );
+        }
+
+        executor.shutdown();
+    }
+}
+```
+
+**Internals:** `SynchronousQueue` (no buffering), `corePoolSize=0`, `maxPoolSize=Integer.MAX_VALUE`, 60s keepAlive.
+
+---
+
+### 6.3 newSingleThreadExecutor()
+
+Exactly one thread. All tasks run sequentially in submission order.
+
+```java
+import java.util.concurrent.*;
+
+public class SingleThreadExecutorExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        // ✅ Use when: tasks must run sequentially; like a single-threaded event loop
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        executor.submit(() -> System.out.println("Step 1: Initialize"));
+        executor.submit(() -> System.out.println("Step 2: Process"));
+        executor.submit(() -> System.out.println("Step 3: Save"));
+        executor.submit(() -> System.out.println("Step 4: Notify"));
+
+        // Always runs in order: Step 1 → 2 → 3 → 4
+        executor.shutdown();
+        executor.awaitTermination(5, TimeUnit.SECONDS);
+    }
+}
+```
+
+---
+
+### 6.4 newWorkStealingPool() (Java 8+)
+
+Based on `ForkJoinPool`. Threads can "steal" tasks from other threads' queues to maximize CPU use.
+
+```java
+import java.util.concurrent.*;
+
+public class WorkStealingPoolExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        // ✅ Use when: irregular task sizes; recursive divide-and-conquer; parallelism
+        ExecutorService executor = Executors.newWorkStealingPool(); // uses availableProcessors()
+
+        for (int i = 1; i <= 8; i++) {
+            final int id = i;
+            executor.submit(() -> {
+                System.out.println("Task " + id + " on " + Thread.currentThread().getName());
+            });
+        }
+
+        executor.awaitTermination(3, TimeUnit.SECONDS);
+    }
+}
+```
+
+---
+
+### 6.5 Custom ThreadPoolExecutor (Full Control)
+
+When the factory shortcuts don't fit, build your own:
+
+```java
+import java.util.concurrent.*;
+
+public class CustomThreadPoolExample {
+
+    public static void main(String[] args) {
+
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+            2,                           // corePoolSize: always-alive threads
+            5,                           // maximumPoolSize: max threads under load
+            30L,                         // keepAliveTime: idle time before shrinking
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(10), // bounded task queue (capacity=10)
+            Executors.defaultThreadFactory(),
+            new ThreadPoolExecutor.CallerRunsPolicy() // rejection policy
+        );
+
+        // Rejection Policies:
+        // AbortPolicy (default) — throws RejectedExecutionException
+        // CallerRunsPolicy    — task runs on the calling thread
+        // DiscardPolicy       — silently discards the task
+        // DiscardOldestPolicy — discards the oldest queued task, retries
+
+        for (int i = 1; i <= 20; i++) {
+            final int id = i;
+            try {
+                executor.execute(() -> {
+                    System.out.println("Task " + id + " on " + Thread.currentThread().getName());
+                    try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                });
+            } catch (RejectedExecutionException e) {
+                System.out.println("Task " + id + " was rejected!");
+            }
+        }
+
+        executor.shutdown();
+    }
+}
+```
+
+### 6.6 Thread Pool Types — Comparison
+
+| Pool Type | Threads | Queue | Best For |
+|---|---|---|---|
+| `newFixedThreadPool(n)` | Fixed `n` | Unbounded `LinkedBlockingQueue` | CPU-bound, stable workloads |
+| `newCachedThreadPool()` | 0 to ∞ | `SynchronousQueue` | Many short I/O tasks |
+| `newSingleThreadExecutor()` | 1 | Unbounded `LinkedBlockingQueue` | Sequential task processing |
+| `newWorkStealingPool()` | CPU cores | Work-steal deque | Fork/Join parallelism |
+| `ThreadPoolExecutor` (custom) | configurable | configurable | Production fine-tuning |
+
+---
+
+## 7. ScheduledExecutorService
+
+Run tasks after a delay, or on a repeating schedule.
+
+### 7.1 schedule() — Run Once After Delay
+
+```java
+import java.util.concurrent.*;
+
+public class ScheduleOnceExample {
+
+    public static void main(String[] args) throws Exception {
+
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+        System.out.println("Scheduling task at: " + System.currentTimeMillis());
+
+        // Run after a 3-second delay
+        ScheduledFuture<String> future = scheduler.schedule(
+            () -> "Task executed at: " + System.currentTimeMillis(),
+            3,
+            TimeUnit.SECONDS
+        );
+
+        System.out.println("Waiting for result...");
+        System.out.println(future.get()); // blocks until task completes
+
+        scheduler.shutdown();
+    }
+}
+```
+
+### 7.2 scheduleAtFixedRate() — Fixed Rate (Timer-like)
+
+```java
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class FixedRateExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+        AtomicInteger count = new AtomicInteger(0);
+
+        // Start after 1s initial delay, then run every 2s
+        // ⚠️ If task takes longer than period, next execution waits for it to finish
+        ScheduledFuture<?> handle = scheduler.scheduleAtFixedRate(
+            () -> System.out.println("Heartbeat #" + count.incrementAndGet()
+                                     + " at " + System.currentTimeMillis()),
+            1,       // initial delay
+            2,       // period
+            TimeUnit.SECONDS
+        );
+
+        Thread.sleep(9000); // Let it run 4 times
+        handle.cancel(false); // Stop the task
+        scheduler.shutdown();
+    }
+}
+```
+
+### 7.3 scheduleWithFixedDelay() — Fixed Delay Between Completions
+
+```java
+import java.util.concurrent.*;
+
+public class FixedDelayExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+
+        // Wait 1s after COMPLETION of last run before starting next
+        // ✅ Safer than fixedRate when tasks can be slow
+        scheduler.scheduleWithFixedDelay(
+            () -> {
+                System.out.println("Poll DB at " + System.currentTimeMillis());
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            },
+            0,      // start immediately
+            2,      // wait 2s after each completion
+            TimeUnit.SECONDS
+        );
+
+        Thread.sleep(10000);
+        scheduler.shutdown();
+    }
+}
+```
+
+| Method | Timing | Use Case |
+|---|---|---|
+| `schedule()` | Once after delay | One-shot delayed task |
+| `scheduleAtFixedRate()` | Every N ms from start | Metrics collection, heartbeats |
+| `scheduleWithFixedDelay()` | N ms after last completion | Polling, retries |
+
+---
+
+## 8. Future & CompletableFuture
+
+### 8.1 Future Limitations
+
+```java
+// Problems with raw Future<V>:
+Future<String> f = executor.submit(() -> "result");
+f.get();        // BLOCKS — you must wait
+                // Can't chain operations
+                // Can't combine multiple Futures
+                // Exception handling is awkward
+```
+
+### 8.2 CompletableFuture (Java 8+) — Async Pipelines
+
+`CompletableFuture<T>` solves all Future limitations with non-blocking chaining.
+
+```java
+import java.util.concurrent.*;
+
+public class CompletableFutureExample {
+
+    public static void main(String[] args) throws Exception {
+
+        // ✅ thenApply — transform result (sync)
+        CompletableFuture<Integer> cf1 = CompletableFuture
+            .supplyAsync(() -> {
+                System.out.println("Step 1 on: " + Thread.currentThread().getName());
+                return 10;
+            })
+            .thenApply(n -> {
+                System.out.println("Step 2 on: " + Thread.currentThread().getName());
+                return n * 2;
+            })
+            .thenApply(n -> n + 5);
+
+        System.out.println("Result: " + cf1.get()); // 25
+
+        // ✅ thenAccept — consume result without returning
+        CompletableFuture.supplyAsync(() -> "Hello")
+            .thenAccept(s -> System.out.println("Consumed: " + s));
+
+        // ✅ thenCombine — combine two independent futures
+        CompletableFuture<String> nameF  = CompletableFuture.supplyAsync(() -> "Alice");
+        CompletableFuture<Integer> scoreF = CompletableFuture.supplyAsync(() -> 95);
+
+        CompletableFuture<String> combined = nameF.thenCombine(scoreF,
+            (name, score) -> name + " scored " + score);
+        System.out.println(combined.get()); // "Alice scored 95"
+
+        // ✅ exceptionally — handle errors
+        CompletableFuture<String> risky = CompletableFuture
+            .supplyAsync(() -> {
+                if (true) throw new RuntimeException("Oops!");
+                return "ok";
+            })
+            .exceptionally(ex -> "Recovered from: " + ex.getMessage());
+
+        System.out.println(risky.get()); // "Recovered from: Oops!"
+
+        // ✅ allOf — wait for ALL to complete
+        CompletableFuture<Void> allDone = CompletableFuture.allOf(
+            CompletableFuture.runAsync(() -> System.out.println("A done")),
+            CompletableFuture.runAsync(() -> System.out.println("B done")),
+            CompletableFuture.runAsync(() -> System.out.println("C done"))
+        );
+        allDone.get(); // waits for all
+
+        // ✅ anyOf — first one to finish
+        CompletableFuture<Object> first = CompletableFuture.anyOf(
+            CompletableFuture.supplyAsync(() -> { sleep(300); return "slow"; }),
+            CompletableFuture.supplyAsync(() -> { sleep(100); return "fast"; })
+        );
+        System.out.println("First: " + first.get()); // "fast"
+    }
+
+    static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+}
+```
+
+---
+
+## 9. Shutdown & Lifecycle Management
+
+Proper shutdown is critical to avoid thread leaks and resource exhaustion.
+
+```java
+import java.util.concurrent.*;
+
+public class ShutdownExample {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+
+        // Submit some work
+        for (int i = 0; i < 5; i++) {
+            executor.submit(() -> {
+                try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                System.out.println("Done: " + Thread.currentThread().getName());
+            });
+        }
+
+        // ✅ shutdown() — graceful: accepts no new tasks, finishes existing ones
+        executor.shutdown();
+
+        // ✅ awaitTermination() — waits for graceful completion
+        if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+            // ✅ shutdownNow() — forceful: sends interrupt to running threads, returns pending tasks
+            List<Runnable> notStarted = executor.shutdownNow();
+            System.out.println("Force shut down. Pending tasks: " + notStarted.size());
+
+            // Wait a bit more
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                System.err.println("Executor did not terminate!");
+            }
+        }
+
+        System.out.println("Executor terminated: " + executor.isTerminated());
+    }
+}
+```
+
+### Lifecycle States
+
+```
+NEW → RUNNING → SHUTDOWN → STOP → TIDYING → TERMINATED
+
+shutdown()     → SHUTDOWN (no new tasks, finish existing)
+shutdownNow()  → STOP     (interrupt running threads)
+isShutdown()   → true after either shutdown call
+isTerminated() → true only after all tasks have finished
+```
+
+---
+
+## 10. Best Practices
+
+### 10.1 Always Name Your Threads (Debugging)
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(4, runnable -> {
+    Thread t = new Thread(runnable);
+    t.setName("payment-processor-" + t.getId());
+    t.setDaemon(false); // don't silently die with main thread
+    return t;
+});
+```
+
+### 10.2 Always Handle Exceptions
+
+```java
+// With execute() — exception is swallowed unless you add a UncaughtExceptionHandler
+// With submit() — exception is stored in the Future; re-thrown on get()
+
+ExecutorService exec = Executors.newFixedThreadPool(2);
+
+Future<?> f = exec.submit(() -> {
+    throw new RuntimeException("Something went wrong");
+});
+
+try {
+    f.get(); // Throws ExecutionException wrapping the original exception
+} catch (ExecutionException e) {
+    System.out.println("Caught: " + e.getCause().getMessage());
+}
+```
+
+### 10.3 Size Thread Pools Correctly
+
+```java
+int cpuCores = Runtime.getRuntime().availableProcessors();
+
+// CPU-bound tasks (no blocking I/O)
+int cpuBoundPoolSize = cpuCores;
+
+// I/O-bound tasks (high blocking time)
+// Rule of thumb: N * (1 + wait_time / compute_time)
+int ioBoundPoolSize = cpuCores * 4; // example for 75% wait time
+```
+
+### 10.4 Use try-with-resources Pattern (Java 19+ ExecutorService implements AutoCloseable)
+
+```java
+// Java 19+ — ExecutorService is AutoCloseable
+try (ExecutorService executor = Executors.newFixedThreadPool(4)) {
+    executor.submit(() -> System.out.println("Task done"));
+} // automatically calls shutdown() and awaitTermination()
+```
+
+### 10.5 Prefer submit() over execute() for Tasks That May Throw
+
+```java
+// execute() — exceptions are lost unless UncaughtExceptionHandler is set
+executor.execute(() -> riskyMethod()); // ❌ exception may disappear
+
+// submit() — exception is captured in Future
+Future<?> f = executor.submit(() -> riskyMethod()); // ✅
+f.get(); // re-throws as ExecutionException
+```
+
+---
+
+## 11. Common Pitfalls
+
+### 11.1 Not Shutting Down the Executor
+
+```java
+// ❌ WRONG — JVM will NOT exit! Non-daemon threads keep it alive.
+ExecutorService executor = Executors.newFixedThreadPool(5);
+executor.submit(() -> System.out.println("Task"));
+// Missing executor.shutdown()!
+
+// ✅ CORRECT
+executor.shutdown();
+```
+
+### 11.2 Calling get() Without Timeout — Risk of Deadlock
+
+```java
+// ❌ DANGEROUS
+String result = future.get(); // blocks forever if task hangs
+
+// ✅ SAFE
+String result = future.get(5, TimeUnit.SECONDS); // throws TimeoutException
+```
+
+### 11.3 Using newCachedThreadPool() for CPU-Bound Tasks
+
+```java
+// ❌ DANGEROUS for CPU-bound work — creates thousands of threads
+ExecutorService bad = Executors.newCachedThreadPool();
+
+// ✅ Bounded pool for CPU-bound
+ExecutorService good = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+```
+
+### 11.4 Ignoring Task Rejection
+
+```java
+// ❌ WRONG — silently loses tasks when queue is full
+ThreadPoolExecutor exec = new ThreadPoolExecutor(2, 5, 30, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(10),
+    new ThreadPoolExecutor.DiscardPolicy()); // tasks silently dropped!
+
+// ✅ BETTER — log and handle
+new ThreadPoolExecutor.RejectedExecutionHandler() {
+    @Override
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+        System.err.println("REJECTED: " + r.toString());
+        // Optionally: persist to DB, put in retry queue, etc.
+    }
+}
+```
+
+---
+
+## 12. Quick Reference — Comparison Table
+
+### Executor Factory Methods
+
+| Method | Threads | Queue | keepAlive |
+|---|---|---|---|
+| `newFixedThreadPool(n)` | n | Unbounded LBQ | N/A |
+| `newCachedThreadPool()` | 0–∞ | SynchronousQueue | 60s |
+| `newSingleThreadExecutor()` | 1 | Unbounded LBQ | N/A |
+| `newWorkStealingPool()` | CPU count | ForkJoin deque | N/A |
+| `newScheduledThreadPool(n)` | n | DelayedWorkQueue | N/A |
+
+### Runnable vs Callable vs Future
+
+| | Runnable | Callable | Future |
+|---|---|---|---|
+| Returns value | No | Yes | Yes (via get()) |
+| Throws checked ex | No | Yes | Wraps in ExecutionException |
+| Method | run() | call() | get(), isDone(), cancel() |
+| Used with | execute(), submit() | submit() | returned by submit() |
+
+### Future vs CompletableFuture
+
+| Feature | Future | CompletableFuture |
+|---|---|---|
+| Blocking get() | Yes | Optional |
+| Chaining | ❌ | ✅ thenApply/thenCompose |
+| Combine futures | ❌ | ✅ thenCombine/allOf/anyOf |
+| Exception handling | awkward | ✅ exceptionally/handle |
+| Manual completion | ❌ | ✅ complete(value) |
+| Java version | 5 | 8 |
+
+---
+
+## Full End-to-End Example
+
+```java
+import java.util.*;
+import java.util.concurrent.*;
+
+/**
+ * End-to-end example: Process a batch of "orders" using a fixed thread pool.
+ * Each order is a Callable<String>. Results are collected via Future.
+ */
+public class OrderProcessingSystem {
+
+    public static void main(String[] args) throws Exception {
+
+        int cpuCores = Runtime.getRuntime().availableProcessors();
+        ExecutorService executor = Executors.newFixedThreadPool(cpuCores,
+            r -> {
+                Thread t = new Thread(r);
+                t.setName("order-worker-" + t.getId());
+                return t;
+            });
+
+        List<Callable<String>> orders = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            final int orderId = i;
+            orders.add(() -> {
+                Thread.sleep((long) (Math.random() * 1000));
+                return "Order #" + orderId + " processed by " + Thread.currentThread().getName();
+            });
+        }
+
+        List<Future<String>> futures = executor.invokeAll(orders);
+
+        System.out.println("=== All Orders Processed ===");
+        for (Future<String> f : futures) {
+            try {
+                System.out.println(f.get());
+            } catch (ExecutionException e) {
+                System.err.println("Order failed: " + e.getCause().getMessage());
+            }
+        }
+
+        executor.shutdown();
+        if (!executor.awaitTermination(15, TimeUnit.SECONDS)) {
+            executor.shutdownNow();
+        }
+        System.out.println("Executor shut down cleanly: " + executor.isTerminated());
+    }
+}
+```
+
+---
+
+*Java Executor Framework — Covering: pre-Java5 problems, Executor hierarchy, Runnable, Callable, Future, CompletableFuture, all pool types, ScheduledExecutorService, lifecycle management, best practices, and pitfalls.*
